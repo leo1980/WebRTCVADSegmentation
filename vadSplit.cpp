@@ -25,38 +25,6 @@
 #include <vector> // std::vector
 #include <fstream> // std::ifstream
 
-void vad_free(void* pVoid)
-{
-  VadInst* handle = (VadInst*)pVoid;
-  WebRtcVad_Free(handle);
-}
-
-void* vad_create()
-{
-  VadInst *handle = WebRtcVad_Create();
-  return (void*)handle;
-}
-
-bool vad_init(void* pVoid)
-{
-    VadInst* handle = (VadInst*)pVoid;
-    if (WebRtcVad_Init(handle)) 
-    {
-        return false;
-    }
-    return true;
-}
-
-bool vad_set_mode(void* pVoid, long mode)
-{
-    VadInst* handle = (VadInst*)pVoid;
-    if (WebRtcVad_set_mode(handle, mode)) 
-    {
-        return false;
-    }
-    return true;
-}
-
 bool vadProcess(VadInst* handle, long sampleRate, const char* buf, long frame_length)
 {
     assert( frame_length % 2 == 0 );
@@ -367,5 +335,5 @@ int vadSplit( const char* fileName, int outputFmt, int aggressiveness/* = 2*/ )
         audioData = nullptr;
     }
         
-    return 0;
+    return segments.size();
 }

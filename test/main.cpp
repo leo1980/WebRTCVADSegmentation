@@ -31,6 +31,8 @@ int main( int argc, char* argv[])
         return -1;
     }
 
+    // TODO check if the first file is wav file
+
     // 0, 1, 2, 3
     int aggressiveness = 1; 
 
@@ -41,7 +43,9 @@ int main( int argc, char* argv[])
     if( argc > 3 )
         outFmt = atoi( argv[3] );
                             
-    vadSplit( argv[1], outFmt, aggressiveness );
+    std::cout<<"Started splitting wav file: "<<argv[1]<<std::endl;
+    int count = vadSplit( argv[1], outFmt, aggressiveness );
+    std::cout<<"Done. It has been splitted into "<<count<<" files"<<std::endl;
         
     return 0;
 }
