@@ -24,6 +24,8 @@
 
 #pragma once 
 
+#include <stdexcept>
+
 using namespace std;
 
 typedef unsigned int uint32;
@@ -57,6 +59,15 @@ public:
     // Clear element
     void clear() noexcept;
 
+    // Get front element 
+    const T& front() const;
+
+    // Get back element
+    const T& back() const;
+
+    // How many elemented has been inserted
+    uint64 size() const noexcept;
+
     // Access element at index
     T& operator[](unsigned int index);
 
@@ -66,6 +77,8 @@ public:
     // The iterate of the first element 
     iterator begin() const noexcept
     {
+        if( m_count == 0 )
+            return end();
         return iterator(m_tail, *this);
     }
 
@@ -194,6 +207,29 @@ void RingBuffer<T>::clear() noexcept
 {
     m_head = 0;
     m_tail = 0;
+    m_count = 0;
+}
+
+template<class T>
+const T& RingBuffer<T>::front() const
+{
+    if( m_count == 0 )
+        throw out_of_range("Beyound boundary");
+    return m_data[m_tail];
+}
+
+template<class T>
+const T& RingBuffer<T>::back() const
+{
+    if( m_count == 0 )
+        throw out_of_range("Beyound boundary");
+    return m_data[m_head];
+}
+
+template<class T>
+uint64 RingBuffer<T>::size() const noexcept
+{
+    return m_count;
 }
 
 template<class T>

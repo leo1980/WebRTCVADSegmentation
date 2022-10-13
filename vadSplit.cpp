@@ -1,14 +1,29 @@
+/**
+ * Copyright (c) 2022 360Converter - Leo Huang 
+ *
+ * See LICENSE for clarification regarding multiple authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include "webrtc/common_audio/vad/include/webrtc_vad.h"
+#include "RingBuffer.h"
 
 #include <cassert> // assert
 #include <iostream> // std::cout
 #include <string> // std::string
 #include <vector> // std::vector
 #include <fstream> // std::ifstream
-
-#include "RingBuffer.h"
-
 
 void vad_free(void* pVoid)
 {
@@ -42,18 +57,8 @@ bool vad_set_mode(void* pVoid, long mode)
     return true;
 }
 
-bool valid_rate_and_frame_length(long rate, long frame_length)
+bool vadProcess(VadInst* handle, long sampleRate, const char* buf, long frame_length)
 {
-    if (WebRtcVad_ValidRateAndFrameLength(rate, frame_length)) 
-    {
-        return false;
-    } 
-    return true;
-}
-
-bool vad_process(void* pVoid, long sampleRate, const char* buf, long frame_length)
-{
-    VadInst* handle = (VadInst*)pVoid;
     assert( frame_length % 2 == 0 );
     int result =  WebRtcVad_Process(handle, sampleRate, (int16_t*)buf, frame_length/2);
     if( result > 0 )
@@ -62,8 +67,7 @@ bool vad_process(void* pVoid, long sampleRate, const char* buf, long frame_lengt
         return false;
 }
 
-
-bool read_wave(const char* fileName, unsigned int& sampleRate, char** audioData, uint64_t& audioLength)
+bool readWavFile(const char* fileName, unsigned int& sampleRate, char** audioData, uint64_t& audioLength)
 {
     // TODO: read sample rate
     sampleRate = 16000;
@@ -76,20 +80,68 @@ bool read_wave(const char* fileName, unsigned int& sampleRate, char** audioData,
     inFile.seekg(0, std::ios::end);
     uint64_t fileSize = inFile.tellg();
 
+    // 44 = wav header size
     uint64_t bufSize = fileSize - 44;
     audioLength = bufSize;
     *audioData = new char[bufSize];
     fseek( pf, 44, SEEK_SET );
-    fread( *audioData, 1, bufSize, pf );
+    fread( *audioData, sizeof( char ), bufSize, pf );
 
     fclose( pf );
 
     return true;
 }
 
-void write_wave(const char* fileName, const char* audioData, uint64_t audioLength, int sample_rate)
+bool writeRawAudioFile(const char* fileName, const char* audioData, uint64_t audioLength, int sample_rate)
 {
-    std::cout<<"write wav: " <<fileName<<std::endl;
+    FILE *pf = fopen( fileName, "wb" );
+    if( nullptr == pf )
+    {
+        return false;
+    }
+    fwrite( audioData, sizeof( char ), audioLength, pf );
+    fclose( pf );
+
+    return true;
+}
+
+void writeWord( FILE* pf, unsigned int value, unsigned size )
+{
+    for (; size; --size, value >>= 8)
+    {
+        char c = static_cast<char>(value & 0xFF);
+        fwrite( &c, sizeof( char ), 1, pf );
+    }
+}
+
+bool writeWavFile(const char* fileName, const char* audioData, uint64_t audioLength, int sampleRate)
+{
+    FILE *pf = fopen( fileName, "wb" );
+    if( nullptr == pf )
+    {
+        return false;
+    }
+    unsigned int channel = 1;
+    unsigned int bitsPerSample = 16;
+    unsigned int strideSize = sampleRate * bitsPerSample * channel / 8; // (Sample Rate * BitsPerSample * Channels) / 8
+    unsigned int blockSize = bitsPerSample * channel / 8; // ( BitsPerSample * Channels) / 8
+    fwrite( "RIFF", 1, 4, pf );
+    writeWord( pf, static_cast<unsigned int>(audioLength) + 44, 4 ); // write file size
+    fwrite( "WAVE", 1, 4, pf );
+    fwrite( "fmt ", 1, 4, pf );
+    writeWord( pf, 16, 4 );  // no extension data
+    writeWord( pf, 1, 2 );  // PCM - integer samples
+    writeWord( pf, channel, 2 );  // two channels (stereo file)
+    writeWord( pf, sampleRate, 4 );  // samples per second (Hz)
+    writeWord( pf, strideSize, 4 );  
+    writeWord( pf, blockSize, 2 );  // data block size (size of two integer samples, one for each channel, in bytes)
+    writeWord( pf, bitsPerSample, 2 );  // number of bits per sample (use a multiple of 8)
+    fwrite( "data", 1, 4, pf );
+    writeWord( pf, static_cast<unsigned int>(audioLength), 4 ); // write data size
+    fwrite( audioData, sizeof( char ), audioLength, pf );
+    fclose( pf );
+
+    return true;
 }
 
 // To avoid memory copy, Frame just store start position of audio and length
@@ -116,11 +168,6 @@ public:
 
     ~Frame()
     {
-        if( nullptr != bytes )
-        {
-            delete []bytes;
-            bytes = nullptr;
-        }
     }
 
     Frame& operator=( const Frame& frame )
@@ -177,45 +224,31 @@ struct Segment
     unsigned int length;
 };
 
-std::vector<Segment> vad_collector(void* vad, unsigned int sample_rate, unsigned int frame_duration_ms,
+std::vector<Segment> vadCollector(VadInst* handle, unsigned int sample_rate, unsigned int frame_duration_ms,
         unsigned int padding_duration_ms, std::vector<Frame>& frames)
 {
-    // Given a webrtcvad.Vad and a source of audio frames, yields only
-    // the voiced audio.
-
-    // Uses a padded, sliding window algorithm over the audio frames.
-    // When more than 90% of the frames in the window are voiced (as
-    // reported by the VAD), the collector triggers and begins yielding
-    // audio frames. Then the collector waits until 90% of the frames in
-    // the window are unvoiced to detrigger.
-
-    // The window is padded at the front and back to provide a small
-    // amount of silence or the beginnings/endings of speech around the
-    // voiced frames.
-
-    // Arguments:
-
-    // sample_rate - The audio sample rate, in Hz.
-    // frame_duration_ms - The frame duration in milliseconds.
-    // padding_duration_ms - The amount to pad the window, in milliseconds.
-    // vad - An instance of webrtcvad.Vad.
-    // frames - a source of audio frames (sequence or generator).
-
-    // Returns: A generator that yields PCM audio data.
-
     int num_padding_frames = padding_duration_ms / frame_duration_ms;
+
     // We have two states: TRIGGERED and NOTTRIGGERED. We start in the
     // NOTTRIGGERED state.
     bool triggered = false;
 
     std::vector<Segment> segments;
-
     std::vector<Frame> voiced_frames;
     Buffers::RingBuffer<Frame> ring_buffer(num_padding_frames);
 
     for( Frame& frame : frames )
     {
-        frame.silence = !vad_process(vad, sample_rate, frame.bytes, frame.length);
+        bool speech = vadProcess(handle, sample_rate, frame.bytes, frame.length);
+        if( speech )
+        {
+            std::cout<<"1";
+        }
+        else
+        {
+            std::cout<<"0";
+        }
+        frame.silence = !speech;
 
         if( !triggered )
         {
@@ -226,13 +259,15 @@ std::vector<Segment> vad_collector(void* vad, unsigned int sample_rate, unsigned
                 if( !(*it).silence )
                     num_voiced++;
             }
+
             // If we're NOTTRIGGERED and more than 90% of the frames in
             // the ring buffer are voiced frames, then enter the
             // TRIGGERED state.
             if ( num_voiced > 0.9 * ring_buffer.capacity())
             {
                 triggered = true;
-                std::cout<<"+"<<ring_buffer[0].timestamp;
+                std::cout<<"+("<<ring_buffer.front().timestamp<<")";
+
                 // We want to yield all the audio we see from now until
                 // we are NOTTRIGGERED, but we have to start with the
                 // audio that's already in the ring buffer.
@@ -255,12 +290,13 @@ std::vector<Segment> vad_collector(void* vad, unsigned int sample_rate, unsigned
                 if( (*it).silence )
                     num_unvoiced++;
             }
+
             // If more than 90% of the frames in the ring buffer are
             // unvoiced, then enter NOTTRIGGERED and yield whatever
             // audio we've collected.
             if( num_unvoiced > 0.9 * ring_buffer.capacity())
             {
-                std::cout<<"-"<<frame.timestamp + frame.duration;
+                std::cout<<"-("<<frame.timestamp + frame.duration<<")";
                 triggered = false;
                 Segment segment;
                 segment.start = voiced_frames[0].bytes;
@@ -272,6 +308,7 @@ std::vector<Segment> vad_collector(void* vad, unsigned int sample_rate, unsigned
         }
     }
     std::cout<<std::endl;
+
     // If we have any leftover voiced audio when we run out of input,
     // yield it.
     if( voiced_frames.size() > 0 )
@@ -285,28 +322,44 @@ std::vector<Segment> vad_collector(void* vad, unsigned int sample_rate, unsigned
     return segments;
 }
 
-int vadSplit( const char* fileName ) 
+int vadSplit( const char* fileName, int outputFmt, int aggressiveness/* = 2*/ ) 
 {
-    int aggressiveness = 0; // 0, 1, 2, 4
-    void* vad = vad_create();
-    vad_init( vad );
-    vad_set_mode( vad, aggressiveness );
+    VadInst *vad = WebRtcVad_Create();
+    if (WebRtcVad_Init(vad)) 
+    {
+        return -1;
+    }
+
+    if (WebRtcVad_set_mode(vad, aggressiveness)) 
+    {
+        return -1;
+    }
     unsigned int sampleRate = 0;
     char* audioData = nullptr;
     uint64_t audioLength = 0;
-    if( !read_wave( fileName, sampleRate, &audioData, audioLength ))
+    if( !readWavFile( fileName, sampleRate, &audioData, audioLength ))
     {
         std::cout<<"Failed to read wav file"<<std::endl;
-        return -1;
+        return -2;
     }
     auto frames = frame_generator(30, audioData, audioLength, sampleRate);
-    auto segments = vad_collector(vad, sampleRate, 30, 300, frames);
+    auto segments = vadCollector(vad, sampleRate, 30, 300, frames);
     int num = 0;
     for( auto& segment : segments )
     {
         char path[256];
-        snprintf(path, sizeof(path), "chunk-%02d.wav", num++);
-        write_wave(path, segment.start, segment.length, sampleRate);
+        if( outputFmt == 0 )
+        {
+            snprintf(path, sizeof(path), "chunk-%02d.pcm", num++);
+            std::cout<<"write audio: " <<path<<std::endl;
+            writeRawAudioFile(path, segment.start, segment.length, sampleRate);
+        }
+        else
+        {
+            snprintf(path, sizeof(path), "chunk-%02d.wav", num++);
+            std::cout<<"write audio: " <<path<<std::endl;
+            writeWavFile(path, segment.start, segment.length, sampleRate);
+        }
     }
     if( nullptr != audioData )
     {
