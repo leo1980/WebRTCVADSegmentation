@@ -18,6 +18,7 @@
 
 #include "webrtc/common_audio/vad/include/webrtc_vad.h"
 #include "RingBuffer.h"
+#include "vadSplit.h"
 
 #include <cassert> // assert
 #include <iostream> // std::cout
@@ -112,6 +113,12 @@ bool writeWavFile(const char* fileName, const char* audioData, uint64_t audioLen
     return true;
 }
 
+struct Segment
+{
+    const char* data;
+    unsigned int length;
+};
+
 // To avoid memory copy, Frame just store start position of audio and length
 class Frame
 {
@@ -185,12 +192,6 @@ std::vector<Frame> frame_generator(int frame_duration_ms, const char* audio, uns
 
     return frames;
 }
-
-struct Segment
-{
-    const char* start;
-    unsigned int length;
-};
 
 std::vector<Segment> vadCollector(VadInst* handle, unsigned int sample_rate, unsigned int frame_duration_ms,
         unsigned int padding_duration_ms, std::vector<Frame>& frames)
@@ -267,7 +268,7 @@ std::vector<Segment> vadCollector(VadInst* handle, unsigned int sample_rate, uns
                 std::cout<<"-("<<frame.timestamp + frame.duration<<")";
                 triggered = false;
                 Segment segment;
-                segment.start = voiced_frames[0].bytes;
+                segment.data = voiced_frames[0].bytes;
                 segment.length = voiced_frames.size() * voiced_frames[0].length;
                 segments.push_back( segment );
                 ring_buffer.clear();
@@ -282,7 +283,7 @@ std::vector<Segment> vadCollector(VadInst* handle, unsigned int sample_rate, uns
     if( voiced_frames.size() > 0 )
     {
         Segment segment;
-        segment.start = voiced_frames[0].bytes;
+        segment.data = voiced_frames[0].bytes;
         segment.length = voiced_frames.size() * voiced_frames[0].length;
         segments.push_back( segment );
     }
@@ -290,7 +291,21 @@ std::vector<Segment> vadCollector(VadInst* handle, unsigned int sample_rate, uns
     return segments;
 }
 
-int vadSplit( const char* fileName, int outputFmt, int aggressiveness/* = 2*/ ) 
+int vadSplit( const char* fileName, std::vector<VadSegment>& segment, int outputFmt /*= -1*/, int aggressiveness /*= 2*/ )
+{
+    unsigned int sampleRate = 0;
+    char* audioData = nullptr;
+    uint64_t audioLength = 0;
+    if( !readWavFile( fileName, sampleRate, &audioData, audioLength ))
+    {
+        std::cout<<"Failed to read wav file"<<std::endl;
+        return -2;
+    }
+    return vadSplit( audioData, audioLength, sampleRate, segment, outputFmt, aggressiveness );
+}
+
+
+int vadSplit( const char* audioData, uint64_t audioLength, unsigned int sampleRate,  std::vector<VadSegment>& vadSegments, int outputFmt /*= -1*/, int aggressiveness /*= 2*/ )
 {
     VadInst *vad = WebRtcVad_Create();
     if (WebRtcVad_Init(vad)) 
@@ -302,14 +317,6 @@ int vadSplit( const char* fileName, int outputFmt, int aggressiveness/* = 2*/ )
     {
         return -1;
     }
-    unsigned int sampleRate = 0;
-    char* audioData = nullptr;
-    uint64_t audioLength = 0;
-    if( !readWavFile( fileName, sampleRate, &audioData, audioLength ))
-    {
-        std::cout<<"Failed to read wav file"<<std::endl;
-        return -2;
-    }
     auto frames = frame_generator(30, audioData, audioLength, sampleRate);
     auto segments = vadCollector(vad, sampleRate, 30, 300, frames);
     int num = 0;
@@ -319,15 +326,23 @@ int vadSplit( const char* fileName, int outputFmt, int aggressiveness/* = 2*/ )
         if( outputFmt == 0 )
         {
             snprintf(path, sizeof(path), "chunk-%02d.pcm", num++);
-            std::cout<<"write audio: " <<path<<std::endl;
-            writeRawAudioFile(path, segment.start, segment.length, sampleRate);
+            writeRawAudioFile(path, segment.data, segment.length, sampleRate);
         }
-        else
+        else if( outputFmt == 1 )
         {
             snprintf(path, sizeof(path), "chunk-%02d.wav", num++);
             std::cout<<"write audio: " <<path<<std::endl;
-            writeWavFile(path, segment.start, segment.length, sampleRate);
+            writeWavFile(path, segment.data, segment.length, sampleRate);
         }
+        else
+        {
+            // do nothing
+        }
+        float startTime = (segment.data-audioData)*1.0f/(sampleRate*2);
+        float endTime = startTime + segment.length * 1.0f/(sampleRate*2);
+        std::cout<<"("<<startTime<<" - "<<endTime<<")"<<std::endl;
+        VadSegment vs(segment.data - audioData, segment.length, startTime, endTime);
+        vadSegments.push_back( vs );
     }
     if( nullptr != audioData )
     {

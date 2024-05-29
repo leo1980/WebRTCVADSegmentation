@@ -44,8 +44,14 @@ int main( int argc, char* argv[])
         outFmt = atoi( argv[3] );
                             
     std::cout<<"Started splitting wav file: "<<argv[1]<<std::endl;
-    int count = vadSplit( argv[1], outFmt, aggressiveness );
+    std::vector<VadSegment> segments;
+    int count = vadSplit( argv[1], segments, outFmt, aggressiveness );
     std::cout<<"Done. It has been splitted into "<<count<<" files"<<std::endl;
+    std::cout<<"-------------------------------------------------"<<std::endl;
+    for( const auto& seg : segments )
+    {
+        std::cout<<"{"<<seg.start<<" - "<<seg.length<<" | "<<seg.start<<" - "<<seg.end<<"}"<<std::endl;
+    }
         
     return 0;
 }

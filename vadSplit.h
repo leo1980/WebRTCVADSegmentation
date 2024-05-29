@@ -19,6 +19,24 @@
 #ifndef _VAD_SPLIT_H_
 #define _VAD_SPLIT_H_
 
+#include <vector>
+
+// offset to data pointer
+struct VadSegment
+{
+    unsigned int offset;
+    unsigned int length;
+    float start;
+    float end;
+    VadSegment( unsigned int offset, unsigned int len, float startTime, float endTime )
+    : offset( offset )
+    , length( len )
+    , start( startTime )
+    , end( endTime )
+    {
+    }
+};
+
 /**
 * @aggressiveness 
 * it is an integer between 0 and 3. 
@@ -26,7 +44,10 @@
 * @outputFmt
 *     0: pcm
 *     1: wav
+*     -1: don't write output file
 */
-int vadSplit( const char* fileName, int outputFmt, int aggressiveness = 2 );
+int vadSplit( const char* fileName, std::vector<VadSegment>& segment, int outputFmt = -1, int aggressiveness = 2 );
+
+int vadSplit( const char* audioData, uint64_t audioLength, unsigned int sampleRate,  std::vector<VadSegment>& segment, int outputFmt = -1, int aggressiveness = 2 );
 
 #endif // _VAD_SPLIT_H_
